@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 from tensorflow.keras.models import Sequential
 
-df = pd.read_csv("hmnist_28_28_RGB.csv")
+df = pd.read_csv("data/csvs/hmnist_28_28_RGB.csv")
 data = np.array(df)
 np.random.shuffle(data)
 X = data[:, :-1]
