@@ -16,9 +16,6 @@ df = pd.read_csv("../data/csvs/HAM10000_metadata.csv")
 img_resize = (100, 100)
 
 def get_images(n):
-    """
-    Get n images from the 
-    """
     X = []
     start = time.time()
     for i, row in enumerate(np.array(df)):
