@@ -1,5 +1,7 @@
 """
-Get statistics from metadata
+Get statistics from metadata to obtain some randomly sampled images for 
+presentation.
+
 """
 import numpy as np
 import os
