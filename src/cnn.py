@@ -5,16 +5,17 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 import tensorflow as tf
 from tensorflow.keras import layers
-from tensorflow.keras.metrics import categorical_accuracy
+from tensorflow.keras.metrics import categorical_accuracy, Precision
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 csv_root = "../data/csvs"
 dims = (28, 28)
+epochs = 20
 image_dir = "../data/all_images"
 
 def get_class_counts():
@@ -72,7 +73,7 @@ def get_X_y_csv():
     data = np.array(df)
     np.random.shuffle(data)
     X = data[:, :-1]
-    X = X.reshape(X.shape[0], 28, 28, 3)
+    X = X.reshape(X.shape[0], 28, 28, 3) / 255
     y = data[:, -1]
     y = y.reshape(y.shape[0], 1)
     onehot = OneHotEncoder()
@@ -83,13 +84,17 @@ def get_X_y_csv():
 def build_model(dims):
     model = Sequential()
     model.add(layers.Conv2D(80, (5, 5), activation="relu", input_shape=(*dims, 3)))
-    model.add(layers.MaxPooling2D(pool_size=(2, 2)))
-    model.add(layers.BatchNormalization(axis=-1))
+    model.add(layers.AveragePooling2D((2, 2)))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Dropout(.2))
     model.add(layers.Conv2D(64, (5, 5), activation="relu"))
-    model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+    model.add(layers.AveragePooling2D(pool_size=(2, 2)))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu"))
+    model.add(layers.AveragePooling2D((2, 2)))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Dropout(.2))
     model.add(layers.Flatten())
-    model.add(layers.Dense(100, activation="relu", use_bias=True))
-    model.add(layers.Dropout(0.3))
     model.add(layers.Dense(7, activation="softmax", use_bias=True))
     return model
 
@@ -102,15 +107,15 @@ if __name__ == "__main__":
 
     model = build_model(dims)
     model.summary()
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy", Precision()])
 
     tf.keras.utils.plot_model(
         model,
         to_file="model.png",
         show_shapes=True,
-        show_dtype=False,
+        show_dtype=True,
         show_layer_names=False,
-        show_layer_activations=False
+        show_layer_activations=True
     )
 
     # Saves the model with highest validation accuracy in all epochs
@@ -126,7 +131,7 @@ if __name__ == "__main__":
     history = model.fit(
         X_train,
         y_train,
-        epochs=100,
+        epochs=epochs,
         callbacks=[checkpoint_callback],
         validation_split=0.2,
     )
