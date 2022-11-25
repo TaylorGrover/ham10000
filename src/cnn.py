@@ -68,6 +68,10 @@ def get_generators(dims=(100, 100), batch_size=32):
 
 
 def get_X_y_csv():
+    """
+    X is the pixel values of the 28x28x3 skin lesion images. y is a binary 
+    one-hot vector (i.e. [0, 1] or [1, 0])
+    """
     csv_path = os.path.join(csv_root, "hmnist_28_28_RGB.csv")
     df = pd.read_csv(csv_path)
     data = np.array(df)
@@ -75,13 +79,14 @@ def get_X_y_csv():
     X = data[:, :-1]
     X = X.reshape(X.shape[0], 28, 28, 3) / 255
     y = data[:, -1]
-    y = y.reshape(y.shape[0], 1)
+    y_dist = [np.mean(y == i) for i in range(max(y))]
+    y = (y.reshape(y.shape[0], 1) == np.argmax(y_dist)) * 1
     onehot = OneHotEncoder()
     y = onehot.fit_transform(y).toarray()
     return X, y
 
 
-def build_model(dims):
+def build_model(dims, out_dim):
     model = Sequential()
     model.add(layers.Conv2D(80, (5, 5), activation="relu", input_shape=(*dims, 3)))
     model.add(layers.AveragePooling2D((2, 2)))
@@ -95,7 +100,7 @@ def build_model(dims):
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(.2))
     model.add(layers.Flatten())
-    model.add(layers.Dense(7, activation="softmax", use_bias=True))
+    model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
     return model
 
 
@@ -105,9 +110,9 @@ if __name__ == "__main__":
     tensor_train = tf.convert_to_tensor(X_train, dtype=tf.float32)
     tensor_test = tf.convert_to_tensor(X_test, dtype=tf.float32)
 
-    model = build_model(dims)
+    model = build_model(dims, y_train.shape[1])
     model.summary()
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy", Precision()])
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
 
     tf.keras.utils.plot_model(
         model,
