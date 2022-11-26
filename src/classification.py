@@ -18,13 +18,28 @@ dims = (28, 28)
 epochs = 20
 image_dir = "../data/all_images"
 
-def get_class_counts():
+def get_class_dist():
     counts = dict()
+    df = get_metadata()
+    for dx in list(set(df.dx)):
+        counts[dx] = np.mean(df.dx == dx)
+    return counts
+
+
+def get_metadata(is_numeric=False):
+    """
+    :return: pandas dataframe of all metadata if not is_numeric, otherwise 
+    returns [dx_type, age, sex, localization]
+    """
     csv_path = os.path.join(csv_root, "HAM10000_metadata.csv")
     df = pd.read_csv(csv_path)
-    for dx in list(set(df.dx)):
-        counts[dx] = int(np.sum(df.dx == dx))
-    return counts
+    le = LabelEncoder()
+    if is_numeric:
+        df.dx_type = le.fit_transform(df.dx_type)
+        df.sex = le.fit_transform(df.sex)
+        df.localization = le.fit_transform(df.localization)
+        df = np.array(df.iloc["dx_type", "age", "sex", "localization"])
+    return df
     
 
 def get_generators(dims=(100, 100), batch_size=32):
@@ -86,7 +101,7 @@ def get_X_y_csv():
     return X, y
 
 
-def build_model(dims, out_dim):
+def build_conv_model(dims, out_dim):
     model = Sequential()
     model.add(layers.Conv2D(80, (5, 5), activation="relu", input_shape=(*dims, 3)))
     model.add(layers.AveragePooling2D((2, 2)))
@@ -101,18 +116,44 @@ def build_model(dims, out_dim):
     model.add(layers.Dropout(.2))
     model.add(layers.Flatten())
     model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
     return model
 
 
-if __name__ == "__main__":
+def experimental_model(img_dim, meta_len, out_dim):
+    """
+    Use metadata in addition to pixel data to perform classification
+    """
+    conv_input = tf.keras.Input(shape=img_dim)
+    conv_x = layers.Conv2D(80, (5, 5), activation="relu", input_shape=(*dims, 3))(conv_input)
+    conv_x = layers.MaxPool2D((2, 2))(conv_x)
+    conv_x = layers.BatchNormalization(-1)(conv_x)
+    conv_x = layers.Conv2D(64, (5, 5), activation="relu")(conv_x)
+    conv_x = layers.MaxPool2D((2, 2))(conv_x)
+    conv_x = layers.BatchNormalization(-1)(conv_x)
+    conv_x = layers.Conv2D(32, (3, 3), activation="relu")(conv_x)
+    conv_x = layers.AveragePooling2D((2, 2))(conv_x)
+    conv_x = layers.BatchNormalization(-1)(conv_x)
+    conv_x = layers.Dropout(.2)(conv_x)
+    conv_x = layers.Flatten()(conv_x)
+
+    meta_input = tf.keras.Input(shape=(meta_len,))
+    x = layers.Dense(100, activation="relu")([meta_input, conv_x])
+    output = layers.Dense(meta_len, activation="softmax")(x)
+
+    model = Model(inputs=[conv_input, meta_input], outputs=output)
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    return model
+
+
+def method_conv():
     X, y = get_X_y_csv()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
     tensor_train = tf.convert_to_tensor(X_train, dtype=tf.float32)
     tensor_test = tf.convert_to_tensor(X_test, dtype=tf.float32)
 
-    model = build_model(dims, y_train.shape[1])
+    model = build_conv_model(dims, y_train.shape[1])
     model.summary()
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
 
     tf.keras.utils.plot_model(
         model,
@@ -130,8 +171,9 @@ if __name__ == "__main__":
         mode="max",
         save_best_only=True
     )
-    counts = get_class_counts()
-    print(json.dumps(counts, indent=4))
+    # To load the model, just do `model = tf.keras.models.load(".")`
+    dist = get_class_dist()
+    print(json.dumps(dist, indent=4))
     #train_gen, val_gen = get_generators(dims)
     history = model.fit(
         X_train,
@@ -141,3 +183,15 @@ if __name__ == "__main__":
         validation_split=0.2,
     )
     print(model.evaluate(X_test, y_test))
+
+
+def method_experimental():
+    X, y = get_X_y_csv()
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    meta_df = get_metadata(is_numeric=True)
+    
+
+
+if __name__ == "__main__":
+    pass
+    #method_conv()
