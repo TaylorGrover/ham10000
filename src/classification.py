@@ -3,12 +3,13 @@ import numpy as np
 import os
 import pandas as pd
 import pdb
+import tensorflow as tf
+
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
-import tensorflow as tf
 from tensorflow.keras import layers
 from tensorflow.keras.metrics import categorical_accuracy, Precision
 from tensorflow.keras.models import Model, Sequential
@@ -41,46 +42,6 @@ def get_metadata(is_numeric=False):
         df.localization = le.fit_transform(df.localization)
         df = np.array(df.iloc[:,3:7])
     return df
-    
-
-def get_generators(dims=(100, 100), batch_size=32):
-    data_generator = ImageDataGenerator(
-        rescale=1 / 255.0,
-        shear_range=0.1,
-        zoom_range=0.1,
-        horizontal_flip=True,
-        vertical_flip=True,
-        height_shift_range=0.1,
-        rotation_range=180
-    )
-    val_datagen = ImageDataGenerator(rescale=1/255.0)
-    train_generator = data_generator.flow_from_directory(
-        image_dir,
-        target_size=dims,
-        batch_size=batch_size,
-        subset="training",
-        class_mode="binary",
-    )
-    validation_generator = val_datagen.flow_from_directory(
-        image_dir,
-        target_size=dims,
-        batch_size=batch_size,
-        class_mode="binary",
-    )
-
-    '''dataset = tf.keras.utils.image_dataset_from_directory(
-        image_dir,
-        labels="inferred",
-        color_mode="rgb",
-        batch_size=batch_size,
-        image_size=dims,
-        shuffle=True,
-        validation_split=0.3,
-        subset="both",
-        seed=23,
-        interpolation="bicubic",
-    )'''
-    return train_generator, validation_generator
 
 
 def get_checkpoint(name):
@@ -162,7 +123,8 @@ def experimental_model(img_dim, meta_len, out_len):
     print(output.shape)
 
     model = Model(inputs=[conv_input, meta_input], outputs=output)
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    opt = tf.keras.optimizers.Adam(learning_rate=0.01)
+    model.compile(optimizer=opt, loss="categorical_crossentropy", metrics=["accuracy"])
     return model
 
 
@@ -190,6 +152,7 @@ def method_conv():
         validation_split=0.2,
     )
     print(model.evaluate(X_test, y_test))
+    pdb.set_trace()
 
 
 def method_conv_and_metadata():
@@ -220,9 +183,11 @@ def method_conv_and_metadata():
         callbacks=[checkpoint_callback],
         validation_split=0.2
     )
+    print(model.evaluate(X_test, y_test))
+    pdb.set_trace()
 
 
 if __name__ == "__main__":
     pass
-    #method_conv()
-    method_conv_and_metadata()
+    method_conv()
+    #method_conv_and_metadata()
