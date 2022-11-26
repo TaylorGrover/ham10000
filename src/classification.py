@@ -2,6 +2,7 @@ import json
 import numpy as np
 import os
 import pandas as pd
+import pdb
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -10,7 +11,7 @@ from sklearn.tree import DecisionTreeClassifier
 import tensorflow as tf
 from tensorflow.keras import layers
 from tensorflow.keras.metrics import categorical_accuracy, Precision
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 csv_root = "../data/csvs"
@@ -38,7 +39,7 @@ def get_metadata(is_numeric=False):
         df.dx_type = le.fit_transform(df.dx_type)
         df.sex = le.fit_transform(df.sex)
         df.localization = le.fit_transform(df.localization)
-        df = np.array(df.iloc["dx_type", "age", "sex", "localization"])
+        df = np.array(df.iloc[:,3:7])
     return df
     
 
@@ -82,6 +83,26 @@ def get_generators(dims=(100, 100), batch_size=32):
     return train_generator, validation_generator
 
 
+def get_checkpoint(name):
+    return tf.keras.callbacks.ModelCheckpoint(
+        filepath=name,
+        monitor="val_accuracy",
+        mode="max",
+        save_best_only=True
+    )
+
+
+def plot_model(model, name):
+    tf.keras.utils.plot_model(
+        model,
+        to_file=name,
+        show_shapes=True,
+        show_dtype=True,
+        show_layer_names=False,
+        show_layer_activations=True
+    )
+
+
 def get_X_y_csv():
     """
     X is the pixel values of the 28x28x3 skin lesion images. y is a binary 
@@ -120,7 +141,7 @@ def build_conv_model(dims, out_dim):
     return model
 
 
-def experimental_model(img_dim, meta_len, out_dim):
+def experimental_model(img_dim, meta_len, out_len):
     """
     Use metadata in addition to pixel data to perform classification
     """
@@ -129,17 +150,16 @@ def experimental_model(img_dim, meta_len, out_dim):
     conv_x = layers.MaxPool2D((2, 2))(conv_x)
     conv_x = layers.BatchNormalization(-1)(conv_x)
     conv_x = layers.Conv2D(64, (5, 5), activation="relu")(conv_x)
-    conv_x = layers.MaxPool2D((2, 2))(conv_x)
-    conv_x = layers.BatchNormalization(-1)(conv_x)
-    conv_x = layers.Conv2D(32, (3, 3), activation="relu")(conv_x)
     conv_x = layers.AveragePooling2D((2, 2))(conv_x)
     conv_x = layers.BatchNormalization(-1)(conv_x)
     conv_x = layers.Dropout(.2)(conv_x)
     conv_x = layers.Flatten()(conv_x)
 
     meta_input = tf.keras.Input(shape=(meta_len,))
-    x = layers.Dense(100, activation="relu")([meta_input, conv_x])
-    output = layers.Dense(meta_len, activation="softmax")(x)
+    merged = layers.Concatenate(axis=1)([conv_x, meta_input])
+    x = layers.Dense(100, activation="relu")(merged)
+    output = layers.Dense(out_len, activation="softmax")(x)
+    print(output.shape)
 
     model = Model(inputs=[conv_input, meta_input], outputs=output)
     model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
@@ -155,22 +175,9 @@ def method_conv():
     model = build_conv_model(dims, y_train.shape[1])
     model.summary()
 
-    tf.keras.utils.plot_model(
-        model,
-        to_file="model.png",
-        show_shapes=True,
-        show_dtype=True,
-        show_layer_names=False,
-        show_layer_activations=True
-    )
-
+    plot_model(model, "conv.png")
     # Saves the model with highest validation accuracy in all epochs
-    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-        filepath=".",
-        monitor="val_accuracy",
-        mode="max",
-        save_best_only=True
-    )
+    checkpoint_callback = get_checkpoint("conv")
     # To load the model, just do `model = tf.keras.models.load(".")`
     dist = get_class_dist()
     print(json.dumps(dist, indent=4))
@@ -185,13 +192,37 @@ def method_conv():
     print(model.evaluate(X_test, y_test))
 
 
-def method_experimental():
+def method_conv_and_metadata():
+    """
+    Combine the pixels and metadata
+    """
     X, y = get_X_y_csv()
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    meta_df = get_metadata(is_numeric=True)
+    meta_x = get_metadata(is_numeric=True)
+    concat = list(zip(X, meta_x))
+    X_train, X_test, y_train, y_test = train_test_split(concat, y, test_size=0.2)
+    X_train, meta_train = zip(*X_train)
+    X_test, meta_test = zip(*X_test)
+    X_train = np.array(X_train)
+    meta_train = np.array(meta_train)
+    X_test = np.array(X_test)
+    meta_test = np.array(meta_test)
+
+    model = experimental_model(X.shape[1:], meta_x.shape[1], y.shape[1])
+    print(model.summary())
     
+    plot_model(model, "conv_and_metadata.png")
+    checkpoint_callback = get_checkpoint("conv_and_metadata")
+    history = model.fit(
+        [X_train, meta_train], 
+        y_train, 
+        epochs=20, 
+        batch_size=48, 
+        callbacks=[checkpoint_callback],
+        validation_split=0.2
+    )
 
 
 if __name__ == "__main__":
     pass
     #method_conv()
+    method_conv_and_metadata()
