@@ -18,14 +18,14 @@ from tensorflow.keras.metrics import categorical_accuracy, Precision
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-epochs = 25
-csv_root = "../data/csvs"
+EPOCHS = 2
+CSV_ROOT = "../data/csvs"
 image_dir_bin = "../data/images_binary"
 image_dir_multi = "../data/images_multiclass"
-model_dir = "../data/models"
-accuracy_dir = "../data/accuracies"
-chart_dir = "../data/training_charts"
-model_plots_dir = "../data/model_plots"
+model_dir = "models"
+accuracy_dir = "accuracies"
+chart_dir = "training_charts"
+model_plots_dir = "model_plots"
 
 def get_class_dist():
     """
@@ -43,7 +43,7 @@ def get_metadata(is_numeric=False):
     :return: pandas dataframe of all metadata if not is_numeric, otherwise 
     returns [dx_type, age, sex, localization]
     """
-    csv_path = os.path.join(csv_root, "HAM10000_metadata.csv")
+    csv_path = os.path.join(CSV_ROOT, "HAM10000_metadata.csv")
     df = pd.read_csv(csv_path)
     le = LabelEncoder()
     if is_numeric:
@@ -56,7 +56,7 @@ def get_metadata(is_numeric=False):
 
 def get_dataset(dims=(100, 100), batch_size=32):
     train_datagen = ImageDataGenerator(
-        rescale=1. / 255
+        rescale=1. / 255,
         shear_range=0.2,
         zoom_range=0.2,
         horizontal_flip=True,
@@ -110,7 +110,7 @@ def get_X_y_csv(is_binary=True):
     X is the pixel values of the 28x28x3 skin lesion images. y is a binary 
     one-hot vector (i.e. [0, 1] or [1, 0])
     """
-    csv_path = os.path.join(csv_root, "hmnist_28_28_RGB.csv")
+    csv_path = os.path.join(CSV_ROOT, "hmnist_28_28_RGB.csv")
     df = pd.read_csv(csv_path)
     data = np.array(df)
     np.random.shuffle(data)
@@ -224,7 +224,7 @@ def method_conv(is_binary=True):
     dist = get_class_dist()
     print(json.dumps(dist, indent=4))
     #train_gen, val_gen = get_generators(dims)
-    model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, epochs)
+    model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, EPOCHS)
     return model, X_train, X_test, y_train, y_test
 
 
@@ -288,7 +288,7 @@ def method_ensemble(is_binary=True, num_models=3):
 
     plot_model(model, plot_name + ".png")
     checkpoint_callback = get_checkpoint(plot_name)
-    model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, epochs)
+    model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, EPOCHS)
     return model, X_train, X_test, y_train, y_test
     
 
