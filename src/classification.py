@@ -5,9 +5,12 @@ import os
 import pandas as pd
 import pdb
 import tensorflow as tf
+import time
 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import RidgeClassifier, SGDClassifier
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
@@ -18,7 +21,7 @@ from tensorflow.keras.metrics import categorical_accuracy, Precision
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-EPOCHS = 2
+EPOCHS = 20
 CSV_ROOT = "../data/csvs"
 image_dir_bin = "../data/images_binary"
 image_dir_multi = "../data/images_multiclass"
@@ -54,27 +57,25 @@ def get_metadata(is_numeric=False):
     return df
 
 
-def get_dataset(dims=(100, 100), batch_size=32):
-    train_datagen = ImageDataGenerator(
+def get_datagen(dims=(100, 100), batch_size=32):
+
+    datagen = ImageDataGenerator(
         rescale=1. / 255,
         shear_range=0.2,
         zoom_range=0.2,
+        rotation_range=90,
         horizontal_flip=True,
         vertical_flip=True,
+        featurewise_center=False,
+        samplewise_center=False,
+        zca_whitening=False,
     )
-    test_datagen = ImageDataGenerator(
-        rescale=1. / 255,
-        shear_range=0.2,
-        zoom_range=0.2,
-        horizontal_flip=True,
-        vertical_flip=True,
-    )
-    train_dataset = tf.keras.utils.image_dataset_from_directory(
+    '''train_dataset = tf.keras.utils.image_dataset_from_directory(
         image_dir_multi,
         labels="inferred",
         label_mode="categorical",
         color_mode="rgb",
-        batch_size=48,
+        batch_size=batch_size,
         image_size=dims,
         shuffle=True,
         subset="training",
@@ -82,7 +83,21 @@ def get_dataset(dims=(100, 100), batch_size=32):
         validation_split=0.2,
         interpolation="bilinear"
     )
-    return train_dataset
+    val_dataset = tf.keras.utils.image_dataset_from_directory(
+        image_dir_multi,
+        labels="inferred",
+        label_mode="categorical",
+        color_mode="rgb",
+        batch_size=batch_size,
+        image_size=dims,
+        shuffle=True,
+        subset="validation",
+        seed=1,
+        validation_split=0.2,
+        interpolation="bilinear"
+    )'''
+
+    return datagen
 
 
 def get_checkpoint(name):
@@ -115,12 +130,17 @@ def get_X_y_csv(is_binary=True):
     data = np.array(df)
     np.random.shuffle(data)
     X = data[:, :-1]
-    X = X.reshape(X.shape[0], 28, 28, 3) / 255
+    mean = np.mean(X, axis=0)
+    std = np.std(X, axis=0)
+    X = (X - mean) / std
+    X = X.reshape(X.shape[0], 28, 28, 3)
     y = data[:, -1]
     y = y.reshape(y.shape[0], 1)
     if is_binary:
-        y_dist = [np.mean(y == i) for i in range(np.max(y))]
-        y = (y == np.argmax(y_dist)) * 1
+        y_dist = np.array([np.mean(y == i) for i in range(np.max(y) + 1)])
+        #y = (y == np.argmax(y_dist)) * 1 # For nv 
+        melanoma_index = np.where(np.abs(y_dist - .1111333) < .0001)[0][0]
+        y = (y == melanoma_index) * 1 # Get melanoma encoding
     onehot = OneHotEncoder()
     y = onehot.fit_transform(y).toarray()
     return X, y
@@ -128,19 +148,21 @@ def get_X_y_csv(is_binary=True):
 
 def build_conv_model(dims, out_dim):
     model = Sequential()
-    model.add(layers.Conv2D(80, (5, 5), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", input_shape=dims))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(.2))
-    model.add(layers.Conv2D(64, (5, 5), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
     model.add(layers.MaxPool2D(pool_size=(2, 2)))
     model.add(layers.BatchNormalization(-1))
-    model.add(layers.Conv2D(32, (3, 3), activation="relu"))
+    model.add(layers.Conv2D(64, (3, 3), activation="relu"))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(.2))
     model.add(layers.Flatten())
     model.add(layers.Dense(200, activation="relu", use_bias=True))
+    model.add(layers.Dense(100, activation="relu", use_bias=True))
     model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
     model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
     return model
@@ -148,6 +170,7 @@ def build_conv_model(dims, out_dim):
 
 def plot_history(name, history, metric):
     fig, ax = plt.subplots(figsize=(7, 5))
+    ax.set_ylim(.55, 1)
     ax.plot(history.history[metric])
     ax.plot(history.history["val_{}".format(metric)])
     ax.set_title(name)
@@ -198,6 +221,7 @@ def performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hi
         "name": plot_name,
         "conf": conf.tolist(),
         "test": test_acc,
+        "epochs": epochs,
     }
     print(json.dumps(data, indent=4))
     with open(os.path.join(accuracy_dir, plot_name + ".json"), "w") as f:
@@ -230,35 +254,19 @@ def method_conv(is_binary=True):
 
 def build_weak_model(dims, out_dim):
     model = Sequential()
-    model.add(layers.Conv2D(
-        80, 
-        (5, 5), 
-        activation="relu", 
-        input_shape=dims,
-    ))
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(0.2))
-    model.add(layers.Conv2D(
-        64, 
-        (5, 5), 
-        activation="relu", 
-        kernel_regularizer=regularizers.L1L2(l1=1e-3, l2=1e-3),
-        bias_regularizer=regularizers.L2(1e-3),
-        activity_regularizer=regularizers.L2(1e-3)
-    ))
-    model.add(layers.Conv2D(
-        32, 
-        (5, 5), 
-        activation="relu", 
-        kernel_regularizer=regularizers.L1L2(l1=1e-3, l2=1e-3),
-        bias_regularizer=regularizers.L2(1e-3),
-        activity_regularizer=regularizers.L2(1e-3)
-    ))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
+    model.add(layers.MaxPool2D((2, 2)))
+    model.add(layers.Conv2D(64, (3, 3), activation="relu"))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(0.2))
     model.add(layers.Flatten())
+    model.add(layers.Dense(50, activation="sigmoid"))
     model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
     model.compile(optimizer="adagrad", loss="categorical_crossentropy", metrics=["accuracy"])
     return model
@@ -302,7 +310,9 @@ def method_SVM(is_binary=True):
 
     svm_full = LinearSVC(verbose=1)
     svm_full.fit(flat_train, y_train)
+    pred = svm_full.predict(flat_test)
     print("Full Linear SVM test accuracy: %f" % (svm_full.score(flat_test, y_test)))
+    print("Full Linear Test Confusion Matrix: {}".format(confusion_matrix(y_test, pred)))
     svm_pca = LinearSVC(verbose=2)
     pca = PCA(n_components=200)
     pca.fit(flat_train.T)
@@ -310,7 +320,9 @@ def method_SVM(is_binary=True):
     pca.fit(flat_test.T)
     cmp_test = pca.components_.T
     svm_pca.fit(cmp_train, y_train)
+    pred = svm_pca.predict(cmp_test)
     print("Linear SVM using PCA: %f" % (svm_pca.score(cmp_test, y_test)))
+    print("Linear SVM Test Confusion Matrix: {}".format(confusion_matrix(y_test, pred)))
     return svm_full, svm_pca, X_train, X_test, y_train, y_test
 
 
@@ -343,11 +355,17 @@ def method_conv_and_metadata(is_binary=True):
 
 
 if __name__ == "__main__":
-    pass
+    start = time.time()
     #svm_full, svm_pca, X_train, X_test, y_train, y_test = method_SVM()
+    print("Conv (Multiclass)")
     model, X_train, X_test, y_train, y_test = method_conv(is_binary=False)
-    model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=False)
+    #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=False)
+    print("Ensemble (Multi)")
     model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=False, num_models=3)
+    print("Conv (Binary)")
     model, X_train, X_test, y_train, y_test = method_conv(is_binary=True)
-    model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=True)
+    #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=True)
+    print("Ensemble (Binary)")
     model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=True, num_models=3)
+    elapsed = time.time() - start
+    print("Training time for all models: {}".format(elapsed))
