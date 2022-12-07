@@ -28,7 +28,10 @@ def print_jsons():
             print(f"Test Accuracy: {data['test']}")
             print(f"Epochs: {data['epochs']}")
             print(f"Confusion Matrix:")
-            print(data['conf'])
+            conf = data['conf']
+            print(conf)
+            if conf.shape == (2, 2):
+                print("True Positive Rate: {}".format(conf[1, 1] / (conf[1, 1] + conf[1, 0])))
             print()
 
 print_latex()

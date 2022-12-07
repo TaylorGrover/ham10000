@@ -4,6 +4,7 @@ import numpy as np
 import os
 import pandas as pd
 import pdb
+import scipy
 import tensorflow as tf
 import time
 
@@ -30,14 +31,17 @@ accuracy_dir = "accuracies"
 chart_dir = "training_charts"
 model_plots_dir = "model_plots"
 
-def get_class_dist():
+def get_class_dist(use_counts=False):
     """
     Get class distribution: weight of each class in dataset
     """
     counts = dict()
     df = get_metadata()
     for dx in list(set(df.dx)):
-        counts[dx] = np.mean(df.dx == dx)
+        if use_counts:
+            counts[dx] = np.sum(df.dx == dx)
+        else:
+            counts[dx] = np.mean(df.dx == dx)
     return counts
 
 
@@ -120,6 +124,58 @@ def plot_model(model, name):
     )
 
 
+def transform(image):
+    rotation_angle = np.random.random() * 180
+    horiz_shift = 10 * np.random.random() - 5
+    vert_shift = 10 * np.random.random() - 5
+    new = scipy.ndimage.rotate(image, rotation_angle, reshape=False, mode="nearest")
+    new = scipy.ndimage.shift(new, (horiz_shift, vert_shift, 0), mode="nearest")
+    return new
+
+
+def upsample(X_train, y_train):
+    """
+    Accept X_train 28x28x3 images and one-hot and corresponding one-hot encoded
+    y_train labels
+    """
+    numeric_labels = np.argmax(y_train, axis=1)
+    labels = list(set(numeric_labels))
+    label_counts = dict(zip(labels, [np.sum(numeric_labels == label) for label in labels]))
+    maximum = np.max(list(label_counts.values()))
+    transformed = []
+    transformed_labels = []
+    print_timer = time.time() 
+    start_timer = time.time()
+    while not np.prod(np.array(list(label_counts.values())) >= maximum):
+        random_indices = np.random.randint(0, len(X_train), (100,))
+        pixels = X_train[random_indices]
+        sample_labels = numeric_labels[random_indices]
+        for (image, image_label) in zip(pixels, sample_labels):
+            if label_counts[image_label] >= maximum:
+                continue
+            transformed_image = transform(image)
+            #print(transformed_image)
+            transformed.append(transformed_image)
+            transformed_labels.append(image_label)
+            label_counts[image_label] += 1
+        if time.time() - print_timer > 2:
+            print("{}\t{}".format(time.time() - start_timer, label_counts))
+            print_timer = time.time()
+    print(time.time() - start_timer)
+    transformed = np.array(transformed)
+    print("Transform pixels")
+    encoder = OneHotEncoder()
+    y_numeric_concat = np.concatenate((numeric_labels, transformed_labels), axis=0).reshape(-1, 1)
+    y_concat = encoder.fit_transform(y_numeric_concat).toarray()
+    print("Transform labels")
+    X_concat = np.concatenate((X_train, transformed), axis=0)
+    return X_concat, y_concat
+    '''new_rows = np.concatenate((transformed, transformed_labels), axis=1)
+    print("Concatenate pixels with labels")
+    return pd.concat((pixels_df, new_rows), axis=0)'''
+
+
+
 def get_X_y_csv(is_binary=True):
     """
     X is the pixel values of the 28x28x3 skin lesion images. y is a binary 
@@ -130,6 +186,7 @@ def get_X_y_csv(is_binary=True):
     data = np.array(df)
     np.random.shuffle(data)
     X = data[:, :-1]
+    counts = get_class_dist(use_counts=True)
     mean = np.mean(X, axis=0)
     std = np.std(X, axis=0)
     X = (X - mean) / std
@@ -137,13 +194,28 @@ def get_X_y_csv(is_binary=True):
     y = data[:, -1]
     y = y.reshape(y.shape[0], 1)
     if is_binary:
-        y_dist = np.array([np.mean(y == i) for i in range(np.max(y) + 1)])
+        y_dist = np.array([np.sum(y == i) for i in range(np.max(y) + 1)])
         #y = (y == np.argmax(y_dist)) * 1 # For nv 
-        melanoma_index = np.where(np.abs(y_dist - .1111333) < .0001)[0][0]
+        melanoma_index = np.where(y_dist == 1113) # For melanoma
         y = (y == melanoma_index) * 1 # Get melanoma encoding
     onehot = OneHotEncoder()
     y = onehot.fit_transform(y).toarray()
     return X, y
+
+
+def get_train_test_tensors(is_binary=True, split=0.2):
+    X, y = get_X_y_csv(is_binary=is_binary)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=split)
+    return X_train, X_test, y_train, y_test
+
+
+def get_train_test_flat(is_binary=True, split=0.2):
+    X_train, X_test, y_train, y_test = get_train_test_tensors(is_binary=is_binary, split=split)
+    X_train = X_train.reshape(X_train.shape[0], np.prod(X_train.shape[1:]))
+    X_test = X_test.reshape(X_test.shape[0], np.prod(X_test.shape[1:]))
+    y_train = np.argmax(y_train, axis=1)
+    y_test = np.argmax(y_test, axis=1)
+    return X_train, X_test, y_train, y_test
 
 
 def build_conv_model(dims, out_dim):
@@ -153,6 +225,7 @@ def build_conv_model(dims, out_dim):
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(.2))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
     model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
     model.add(layers.MaxPool2D(pool_size=(2, 2)))
     model.add(layers.BatchNormalization(-1))
@@ -205,6 +278,19 @@ def experimental_model(img_dim, meta_len, out_len):
     return model
 
 
+def save_json(name, conf, acc, epochs):
+    data = {
+        "name": name,
+        "conf": conf.tolist(),
+        "test": acc,
+        "epochs": epochs,
+    }
+    print(json.dumps(data, indent=4))
+    with open(os.path.join(accuracy_dir, name + ".json"), "w") as f:
+        json.dump(data, f, indent=4)
+    
+
+
 def performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, epochs):
     history = model.fit(
         X_train,
@@ -217,21 +303,15 @@ def performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hi
     model = tf.keras.models.load_model(os.path.join(model_dir, plot_name))
     test_acc = model.evaluate(X_test, y_test)
     conf = confusion_matrix(np.argmax(y_test, axis=1), np.argmax(model.predict(X_test), axis=1))
-    data = {
-        "name": plot_name,
-        "conf": conf.tolist(),
-        "test": test_acc,
-        "epochs": epochs,
-    }
-    print(json.dumps(data, indent=4))
-    with open(os.path.join(accuracy_dir, plot_name + ".json"), "w") as f:
-        json.dump(data, f, indent=4)
+    save_json(plot_name, conf, test_acc, epochs)
     return model
 
 
-def method_conv(is_binary=True):
+def method_conv(is_binary=True, use_aug=False):
     X, y = get_X_y_csv(is_binary=is_binary)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    if use_aug:
+        X_train, y_train = upsample(X_train, y_train)
 
     model = build_conv_model(X.shape[1:], y_train.shape[1])
     model.summary()
@@ -252,8 +332,66 @@ def method_conv(is_binary=True):
     return model, X_train, X_test, y_train, y_test
 
 
+def conv_pool(dims, out_dim):
+    model_input = tf.keras.Input(shape=dims)
+    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(model_input)
+    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(x)
+    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(x)
+    x = layers.MaxPool2D((2, 2), strides=2)(x)
+    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
+    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
+    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
+    x = layers.MaxPool2D((2, 2), strides=2)(x)
+    x = layers.Conv2D(out_dim, (1, 1), activation="relu", padding="same")(x)
+    x = layers.Flatten()(x)
+    x = layers.Dense(out_dim, activation="relu")(x)
+    model = Model(model_input, x)
+    model.compile(optimizer="adagrad", loss="categorical_cross_entropy", metrics=["accuracy"])
+    return model
+
+
+def build_ens_1(dims, out_dim):
+    model = Sequential()
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(16, (3, 3), activation="relu"))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu"))
+    model.add(layers.GlobalAveragePooling2D())
+    model.add(layers.Dense(out_dim, activation="softmax"))
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    return model
+
+def build_ens_2(dims, out_dim):
+    model = Sequential()
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
+    model.add(layers.AveragePooling2D((2, 2), padding="same"))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", input_shape=dims, use_bias=True))
+    model.add(layers.AveragePooling2D((2, 2), padding="same"))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Flatten())
+    model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    return model
+
+
+def build_ens_3(dims, out_dim):
+    model = Sequential()
+    model.add(layers.Conv2D(32, (3, 3), activation="sigmoid", input_shape=dims))
+    model.add(layers.Conv2D(32, (2, 2), activation="sigmoid", use_bias=True))
+    model.add(layers.MaxPool2D((2, 2)))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Conv2D(64, (3, 3), activation="relu", use_bias=True))
+    model.add(layers.MaxPool2D((2, 2)))
+    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Flatten())
+    model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
+    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    return model
+
+
 def build_weak_model(dims, out_dim):
     model = Sequential()
+    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
     model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
     model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
     model.add(layers.MaxPool2D((2, 2)))
@@ -261,19 +399,20 @@ def build_weak_model(dims, out_dim):
     model.add(layers.Dropout(0.2))
     model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
     model.add(layers.MaxPool2D((2, 2)))
+    model.add(layers.BatchNormalization(-1))
     model.add(layers.Conv2D(64, (3, 3), activation="relu"))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(0.2))
     model.add(layers.Flatten())
-    model.add(layers.Dense(50, activation="sigmoid"))
+    model.add(layers.Dense(50, activation="relu"))
     model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
     model.compile(optimizer="adagrad", loss="categorical_crossentropy", metrics=["accuracy"])
     return model
 
 
 def build_ensemble(num_models, input_shape, output_shape):
-    weak_models = [build_weak_model(input_shape, output_shape) for i in range(num_models)]
+    weak_models = [build_ens_1(input_shape, output_shape), build_ens_2(input_shape, output_shape), build_ens_3(input_shape, output_shape)]
     model_input = tf.keras.Input(shape=input_shape)
     outputs = [model(model_input) for model in weak_models]
     ensemble_output = layers.Average()(outputs)
@@ -282,13 +421,15 @@ def build_ensemble(num_models, input_shape, output_shape):
     return model
 
 
-def method_ensemble(is_binary=True, num_models=3):
+def method_ensemble(is_binary=True, use_aug=False, num_models=3):
     X, y = get_X_y_csv(is_binary=is_binary)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    if use_aug:
+        X_train, y_train = upsample(X_train, y_train)
     
     model = build_ensemble(num_models, X.shape[1:], y.shape[1])
 
-    hist_name = f"Weak CNN Ensemble (Model count: {num_models})"
+    hist_name = f"CNN Ensemble (Model count: {num_models})"
     plot_name = f"ensemble_{num_models}"
     if is_binary:
         hist_name += " (binary)"
@@ -301,23 +442,17 @@ def method_ensemble(is_binary=True, num_models=3):
     
 
 def method_SVM(is_binary=True):
-    X, y = get_X_y_csv(is_binary=is_binary)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    flat_train = X_train.reshape(X_train.shape[0], np.prod(X_train.shape[1:]))
-    flat_test = X_test.reshape(X_test.shape[0], np.prod(X_test.shape[1:]))
-    y_train = np.argmax(y_train, axis=1)
-    y_test = np.argmax(y_test, axis=1)
-
+    X_train, X_test, y_train, y_test = get_train_test_flat(is_binary=is_binary, split=0.2)
     svm_full = LinearSVC(verbose=1)
-    svm_full.fit(flat_train, y_train)
-    pred = svm_full.predict(flat_test)
-    print("Full Linear SVM test accuracy: %f" % (svm_full.score(flat_test, y_test)))
+    svm_full.fit(X_train, y_train)
+    pred = svm_full.predict(X_test)
+    print("Full Linear SVM test accuracy: %f" % (svm_full.score(X_test, y_test)))
     print("Full Linear Test Confusion Matrix: {}".format(confusion_matrix(y_test, pred)))
     svm_pca = LinearSVC(verbose=2)
     pca = PCA(n_components=200)
-    pca.fit(flat_train.T)
+    pca.fit(X_train.T)
     cmp_train = pca.components_.T
-    pca.fit(flat_test.T)
+    pca.fit(X_test.T)
     cmp_test = pca.components_.T
     svm_pca.fit(cmp_train, y_train)
     pred = svm_pca.predict(cmp_test)
@@ -354,18 +489,28 @@ def method_conv_and_metadata(is_binary=True):
     return model, X_train, X_test, y_train, y_test
 
 
+def method_random_forest(is_binary=True):
+    X_train, X_test, y_train, y_test = get_train_test_flat(is_binary=is_binary)
+    rf = RandomForestClassifier(n_estimators=1000, max_depth=10, n_jobs=3, verbose=True)
+    rf.fit(X_train, y_train)
+    pred = rf.predict(X_test)
+    conf = confusion_matrix(y_test, pred)
+    print(rf.score(X_test, y_test))
+    print(conf)
+
+
 if __name__ == "__main__":
     start = time.time()
     #svm_full, svm_pca, X_train, X_test, y_train, y_test = method_SVM()
     print("Conv (Multiclass)")
-    model, X_train, X_test, y_train, y_test = method_conv(is_binary=False)
+    #model, X_train, X_test, y_train, y_test = method_conv(is_binary=False, use_aug=True)
     #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=False)
     print("Ensemble (Multi)")
-    model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=False, num_models=3)
+    #model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=False, use_aug=True, num_models=3)
     print("Conv (Binary)")
-    model, X_train, X_test, y_train, y_test = method_conv(is_binary=True)
+    model, X_train, X_test, y_train, y_test = method_conv(is_binary=True, use_aug=True)
     #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=True)
     print("Ensemble (Binary)")
-    model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=True, num_models=3)
+    #model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=True, use_aug=True, num_models=3)
     elapsed = time.time() - start
     print("Training time for all models: {}".format(elapsed))
