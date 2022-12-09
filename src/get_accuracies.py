@@ -31,7 +31,8 @@ def print_jsons():
             conf = data['conf']
             print(conf)
             if conf.shape == (2, 2):
-                print("True Positive Rate: {}".format(conf[1, 1] / (conf[1, 1] + conf[1, 0])))
+                print("Sensitivity: {}".format(conf[1, 1] / (conf[1, 1] + conf[1, 0])))
+                print("Specificity: {}".format(conf[0, 0] / (conf[0, 0] + conf[0, 1])))
             print()
 
 print_latex()

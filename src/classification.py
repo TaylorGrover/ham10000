@@ -176,7 +176,7 @@ def upsample(X_train, y_train):
 
 
 
-def get_X_y_csv(is_binary=True):
+def get_X_y_csv(is_binary=True, use_std_scale=True):
     """
     X is the pixel values of the 28x28x3 skin lesion images. y is a binary 
     one-hot vector (i.e. [0, 1] or [1, 0])
@@ -187,9 +187,12 @@ def get_X_y_csv(is_binary=True):
     np.random.shuffle(data)
     X = data[:, :-1]
     counts = get_class_dist(use_counts=True)
-    mean = np.mean(X, axis=0)
-    std = np.std(X, axis=0)
-    X = (X - mean) / std
+    if use_std_scale:
+        mean = np.mean(X, axis=0)
+        std = np.std(X, axis=0)
+        X = (X - mean) / std
+    else:
+        X = X / 255.
     X = X.reshape(X.shape[0], 28, 28, 3)
     y = data[:, -1]
     y = y.reshape(y.shape[0], 1)
@@ -220,22 +223,19 @@ def get_train_test_flat(is_binary=True, split=0.2):
 
 def build_conv_model(dims, out_dim):
     model = Sequential()
-    model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
-    model.add(layers.Conv2D(32, (3, 3), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(32, (3, 3), activation="leaky_relu", use_bias=True, input_shape=dims))
+    model.add(layers.Conv2D(32, (3, 3), activation="leaky_relu", use_bias=True))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Dropout(.2))
-    model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
-    model.add(layers.Conv2D(32, (3, 3), activation="relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4)))
+    model.add(layers.Conv2D(32, (3, 3), activation="leaky_relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4), use_bias=True))
+    model.add(layers.Conv2D(32, (3, 3), activation="leaky_relu", kernel_regularizer=regularizers.L1L2(l1=1e-5, l2=1e-4), use_bias=True))
     model.add(layers.MaxPool2D(pool_size=(2, 2)))
     model.add(layers.BatchNormalization(-1))
-    model.add(layers.Conv2D(64, (3, 3), activation="relu"))
-    model.add(layers.MaxPool2D((2, 2)))
-    model.add(layers.BatchNormalization(-1))
+    model.add(layers.Conv2D(64, (3, 3), activation="leaky_relu", use_bias=False))
     model.add(layers.Dropout(.2))
     model.add(layers.Flatten())
-    model.add(layers.Dense(200, activation="relu", use_bias=True))
-    model.add(layers.Dense(100, activation="relu", use_bias=True))
+    model.add(layers.Dense(300, activation="relu", use_bias=True))
     model.add(layers.Dense(out_dim, activation="softmax", use_bias=True))
     model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
     return model
@@ -298,6 +298,7 @@ def performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hi
         epochs=epochs,
         callbacks=[checkpoint_callback],
         validation_split=0.2,
+        shuffle=True,
     )
     plot_history(hist_name, history, "accuracy")
     model = tf.keras.models.load_model(os.path.join(model_dir, plot_name))
@@ -307,54 +308,11 @@ def performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hi
     return model
 
 
-def method_conv(is_binary=True, use_aug=False):
-    X, y = get_X_y_csv(is_binary=is_binary)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    if use_aug:
-        X_train, y_train = upsample(X_train, y_train)
-
-    model = build_conv_model(X.shape[1:], y_train.shape[1])
-    model.summary()
-
-    hist_name = "Deep Convolutional Model Accuracy"
-    plot_name = "conv"
-    if is_binary: 
-        hist_name += " (binary)"
-        plot_name += "_bin"
-    plot_model(model, plot_name + ".png")
-    # Saves the model with highest validation accuracy in all epochs
-    checkpoint_callback = get_checkpoint(plot_name)
-    # To load the model, just do `model = tf.keras.models.load(".")`
-    dist = get_class_dist()
-    print(json.dumps(dist, indent=4))
-    #train_gen, val_gen = get_generators(dims)
-    model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, EPOCHS)
-    return model, X_train, X_test, y_train, y_test
-
-
-def conv_pool(dims, out_dim):
-    model_input = tf.keras.Input(shape=dims)
-    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(model_input)
-    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(x)
-    x = layers.Conv2D(32, (3, 3), activation="relu", padding="same")(x)
-    x = layers.MaxPool2D((2, 2), strides=2)(x)
-    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
-    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
-    x = layers.Conv2D(64, (3, 3), activation="relu", padding="same")(x)
-    x = layers.MaxPool2D((2, 2), strides=2)(x)
-    x = layers.Conv2D(out_dim, (1, 1), activation="relu", padding="same")(x)
-    x = layers.Flatten()(x)
-    x = layers.Dense(out_dim, activation="relu")(x)
-    model = Model(model_input, x)
-    model.compile(optimizer="adagrad", loss="categorical_cross_entropy", metrics=["accuracy"])
-    return model
-
-
 def build_ens_1(dims, out_dim):
     model = Sequential()
     model.add(layers.Conv2D(16, (3, 3), activation="relu", input_shape=dims))
-    model.add(layers.Conv2D(16, (3, 3), activation="relu"))
     model.add(layers.Conv2D(32, (3, 3), activation="relu"))
+    model.add(layers.Conv2D(64, (3, 3), activation="relu"))
     model.add(layers.GlobalAveragePooling2D())
     model.add(layers.Dense(out_dim, activation="softmax"))
     model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
@@ -376,8 +334,8 @@ def build_ens_2(dims, out_dim):
 
 def build_ens_3(dims, out_dim):
     model = Sequential()
-    model.add(layers.Conv2D(32, (3, 3), activation="sigmoid", input_shape=dims))
-    model.add(layers.Conv2D(32, (2, 2), activation="sigmoid", use_bias=True))
+    model.add(layers.Conv2D(32, (4, 4), activation="relu", input_shape=dims))
+    model.add(layers.Conv2D(32, (3, 3), activation="relu", use_bias=True))
     model.add(layers.MaxPool2D((2, 2)))
     model.add(layers.BatchNormalization(-1))
     model.add(layers.Conv2D(64, (3, 3), activation="relu", use_bias=True))
@@ -411,8 +369,8 @@ def build_weak_model(dims, out_dim):
     return model
 
 
-def build_ensemble(num_models, input_shape, output_shape):
-    weak_models = [build_ens_1(input_shape, output_shape), build_ens_2(input_shape, output_shape), build_ens_3(input_shape, output_shape)]
+def build_ensemble(input_shape, output_shape):
+    weak_models = [build_conv_model(input_shape, output_shape) for i in range(3)]
     model_input = tf.keras.Input(shape=input_shape)
     outputs = [model(model_input) for model in weak_models]
     ensemble_output = layers.Average()(outputs)
@@ -421,25 +379,51 @@ def build_ensemble(num_models, input_shape, output_shape):
     return model
 
 
-def method_ensemble(is_binary=True, use_aug=False, num_models=3):
-    X, y = get_X_y_csv(is_binary=is_binary)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    if use_aug:
-        X_train, y_train = upsample(X_train, y_train)
-    
-    model = build_ensemble(num_models, X.shape[1:], y.shape[1])
-
-    hist_name = f"CNN Ensemble (Model count: {num_models})"
-    plot_name = f"ensemble_{num_models}"
-    if is_binary:
+def get_model_name(is_binary, use_aug, use_std_scale, use_ensemble):
+    if use_ensemble:
+        hist_name = f"CNN Ensemble (Model count: 3)"
+        plot_name = f"ensemble_3"
+    else:
+        hist_name = "Deep Convolutional Model Accuracy"
+        plot_name = "conv"
+    if is_binary: 
         hist_name += " (binary)"
         plot_name += "_bin"
+    if use_std_scale:
+        hist_name += " (Standard Scaled)"
+        plot_name += "_std_scaled"
+    if use_aug:
+        hist_name += " [Augmented]"
+        plot_name += "_aug"
+    return hist_name, plot_name
+    
+
+def method_conv(is_binary=True, use_aug=False, use_std_scale=True, use_ensemble=False, X_train=None, y_train=None, X_test=None, y_test=None):
+    if X_train is None or y_train is None or X_test is None or y_test is None:
+        if use_aug:
+            X, y = get_X_y_csv(is_binary=is_binary, use_std_scale=use_std_scale)
+        else:
+            X, y = get_X_y_csv(is_binary=is_binary, use_std_scale=use_std_scale)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+        if use_aug:
+            X_train, y_train = upsample(X_train, y_train)
+    if use_ensemble:
+        model = build_ensemble(X_train.shape[1:] , y_train.shape[1])
+    else:
+        model = build_conv_model(X_train.shape[1:], y_train.shape[1])
+    model.summary()
+    hist_name, plot_name = get_model_name(is_binary, use_aug, use_std_scale, use_ensemble)
 
     plot_model(model, plot_name + ".png")
+    # Saves the model with highest validation accuracy in all epochs
     checkpoint_callback = get_checkpoint(plot_name)
+    # To load the model, just do `model = tf.keras.models.load(".")`
+    dist = get_class_dist()
+    print(json.dumps(dist, indent=4))
+    #train_gen, val_gen = get_generators(dims)
     model = performance(model, X_train, y_train, X_test, y_test, checkpoint_callback, hist_name, plot_name, EPOCHS)
     return model, X_train, X_test, y_train, y_test
-    
+
 
 def method_SVM(is_binary=True):
     X_train, X_test, y_train, y_test = get_train_test_flat(is_binary=is_binary, split=0.2)
@@ -502,15 +486,6 @@ def method_random_forest(is_binary=True):
 if __name__ == "__main__":
     start = time.time()
     #svm_full, svm_pca, X_train, X_test, y_train, y_test = method_SVM()
-    print("Conv (Multiclass)")
-    #model, X_train, X_test, y_train, y_test = method_conv(is_binary=False, use_aug=True)
-    #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=False)
-    print("Ensemble (Multi)")
-    #model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=False, use_aug=True, num_models=3)
-    print("Conv (Binary)")
-    model, X_train, X_test, y_train, y_test = method_conv(is_binary=True, use_aug=True)
-    #model, X_train, X_test, y_train, y_test = method_conv_and_metadata(is_binary=True)
-    print("Ensemble (Binary)")
-    #model, X_train, X_test, y_train, y_test = method_ensemble(is_binary=True, use_aug=True, num_models=3)
+    model, X_train, X_test, y_train, y_test = method_conv(is_binary=False, use_aug=True, use_std_scale=True, use_ensemble=False)
     elapsed = time.time() - start
     print("Training time for all models: {}".format(elapsed))
