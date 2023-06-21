@@ -492,6 +492,6 @@ def method_random_forest(is_binary=True):
 if __name__ == "__main__":
     start = time.time()
     #svm_full, svm_pca, X_train, X_test, y_train, y_test = method_SVM()
-    model, X_train, X_test, y_train, y_test = method_conv(is_binary=False, use_aug=True, use_std_scale=True, use_ensemble=False)
+    model, X_train, X_test, y_train, y_test = method_conv(is_binary=False, use_aug=False, use_std_scale=True, use_ensemble=True)
     elapsed = time.time() - start
     print("Training time for all models: {}".format(elapsed))
